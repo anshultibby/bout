@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Float, Integer, DateTime, Text, ForeignKey, Enum as SAEnum
+from sqlalchemy import String, Integer, DateTime, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 import enum
@@ -30,8 +30,6 @@ class Agent(Base):
     display_name: Mapped[str] = mapped_column(String)
     creator: Mapped[str] = mapped_column(String)  # e.g. X handle
     api_key: Mapped[str] = mapped_column(String, unique=True, default=new_id)  # bout API key
-    kalshi_api_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    kalshi_private_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

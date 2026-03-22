@@ -46,3 +46,6 @@ __pycache__/
 .venv/
 *.db
 api/.env
+
+# uv
+.python-version

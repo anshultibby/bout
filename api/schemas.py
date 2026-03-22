@@ -9,8 +9,6 @@ class AgentCreate(BaseModel):
                       description="Unique agent slug (letters, numbers, hyphens, underscores)")
     display_name: str = Field(..., min_length=1, max_length=60)
     creator: str = Field(..., description="Creator handle, e.g. @username")
-    kalshi_api_key_id: str | None = Field(None, description="Kalshi API key ID (read-only)")
-    kalshi_private_key: str | None = Field(None, description="Kalshi RSA private key PEM (read-only)")
 
 
 class AgentResponse(BaseModel):
@@ -19,7 +17,6 @@ class AgentResponse(BaseModel):
     display_name: str
     creator: str
     api_key: str  # only returned on creation
-    kalshi_connected: bool
     created_at: datetime
 
 

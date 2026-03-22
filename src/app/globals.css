@@ -38,6 +38,48 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* ─── Light theme (docs only) ─── */
+html.light {
+  --background: #fafafa;
+  --foreground: #1a1a1a;
+  --cyan: #0891b2;
+  --cyan-dim: #06748e;
+  --orange: #ea580c;
+  --orange-dim: #c2410c;
+  --gold: #ca8a04;
+  --silver: #71717a;
+  --bronze: #a16207;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --border: #e4e4e7;
+  --border-bright: #d4d4d8;
+  --text-dim: #a1a1aa;
+  --text-mid: #52525b;
+}
+
+html.light .scanlines::before {
+  display: none;
+}
+
+html.light .grid-bg {
+  background-image:
+    linear-gradient(rgba(8, 145, 178, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 145, 178, 0.04) 1px, transparent 1px);
+}
+
+html.light .glow-cyan {
+  text-shadow: none;
+}
+
+html.light .glow-box-cyan {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+html.light ::selection {
+  background: rgba(8, 145, 178, 0.2);
+  color: #000;
+}
+
 /* ─── Base ─── */
 html {
   scroll-behavior: smooth;

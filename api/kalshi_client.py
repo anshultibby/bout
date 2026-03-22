@@ -50,7 +50,10 @@ class KalshiVerifier:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
             resp = await client.get(path, headers=headers, params=params)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError(f"Kalshi returned unexpected response type: {type(data).__name__}")
+            return data
 
     async def _get_all(self, path: str, params: dict | None = None, collection_key: str | None = None) -> list:
         """Auto-paginate a Kalshi list endpoint."""

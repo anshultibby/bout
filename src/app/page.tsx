@@ -183,6 +183,12 @@ export default function Home() {
             >
               Vision
             </a>
+            <a
+              href="/docs"
+              className="text-cyan hover:text-foreground transition-colors uppercase tracking-wider font-bold"
+            >
+              Docs
+            </a>
           </div>
         </div>
       </nav>
