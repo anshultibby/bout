@@ -16,7 +16,7 @@ from schemas import (
     TradeReport, TradeResponse, TradeVerificationResult, VerifyAllResult,
     BadgeResponse,
 )
-from kalshi_client import KalshiVerifier
+from kalshi_client import KalshiVerifier, get_public_market
 from badge import render_badge_svg
 
 logger = logging.getLogger(__name__)
@@ -332,24 +332,21 @@ async def verify_agent_trades(
 @app.post("/agents/{agent_name}/settle", tags=["Settlement"])
 async def settle_agent_trades(
     agent_name: str,
-    x_kalshi_key_id: str = Header(..., description="Your Kalshi API key ID"),
-    x_kalshi_private_key: str = Header(..., description="Your Kalshi RSA private key (PEM)"),
     agent: Agent = Depends(get_agent_by_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Sync settlements for verified trades.
+    Settle open trades — call this after a market resolves.
 
-    Checks Kalshi for:
-    1. Trades the bot sold early (matched sell fills) → computes P&L from buy-sell spread
-    2. Markets that have settled → computes P&L from settlement value
+    No Kalshi credentials needed. Bout checks Kalshi's public market API
+    for settlement results and matches reported sell trades for early exits.
 
-    Call this periodically (e.g. daily) to keep your P&L up to date.
+    Call this whenever you want to update your P&L:
+    - After a market you're in settles
+    - After you sell a position early (report the sell via POST /trades first)
     """
     if agent.name != agent_name:
         raise HTTPException(status_code=403, detail="API key does not match this agent")
-
-    verifier = KalshiVerifier(x_kalshi_key_id, x_kalshi_private_key)
 
     # Get all verified BUY trades that are still open
     result = await db.execute(
@@ -365,61 +362,58 @@ async def settle_agent_trades(
     if not open_buys:
         return {"settled": 0, "sold_early": 0, "still_open": 0}
 
-    # Pull all fills and settlements from Kalshi
-    try:
-        fills = await verifier.get_fills()
-        settlements = await verifier.get_settlements()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail=f"Kalshi API error: {exc.response.status_code}")
-
-    # Build lookup: ticker+side → list of sell fills (for early exits)
-    sell_fills: dict[str, list[dict]] = {}
-    for f in fills:
-        if f.get("action") == "sell":
-            key = f"{f.get('ticker')}:{f.get('side')}"
-            sell_fills.setdefault(key, []).append(f)
-
-    # Build lookup: ticker → settlement data
-    settlement_map: dict[str, dict] = {}
-    for s in settlements:
-        settlement_map[s.get("ticker", "")] = s
+    # Check for early exits: match reported sell trades against open buys
+    sell_result = await db.execute(
+        select(Trade).where(
+            Trade.agent_id == agent.id,
+            Trade.action == "sell",
+            Trade.resolution == SettlementStatus.open.value,
+        ).order_by(Trade.reported_at)
+    )
+    reported_sells = list(sell_result.scalars().all())
 
     settled_count = 0
     sold_early_count = 0
     still_open = 0
     now = datetime.now(timezone.utc)
 
+    # Cache public market lookups to avoid duplicate requests
+    market_cache: dict[str, dict | None] = {}
+
     for trade in open_buys:
         fill_price = trade.kalshi_fill_price or trade.price_cents
-        sell_key = f"{trade.ticker}:{trade.side}"
 
-        # Check 1: did the bot sell early?
+        # Check 1: did the bot report a matching sell?
         matched_sell = None
-        for sf in sell_fills.get(sell_key, []):
-            if sf.get("count") == trade.contracts:
-                matched_sell = sf
+        for sell in reported_sells:
+            if (sell.ticker == trade.ticker and
+                sell.side == trade.side and
+                sell.contracts == trade.contracts):
+                matched_sell = sell
                 break
 
         if matched_sell:
-            sell_price = matched_sell.get("yes_price") if trade.side == "yes" else matched_sell.get("no_price")
-            if sell_price is not None:
-                trade.resolution = "sold"
-                trade.exit_price_cents = sell_price
-                trade.pnl_cents = (sell_price - fill_price) * trade.contracts
-                trade.resolved_at = now
-                sold_early_count += 1
-                # Remove this sell fill so it's not matched again
-                sell_fills[sell_key].remove(matched_sell)
-                continue
+            sell_price = matched_sell.kalshi_fill_price or matched_sell.price_cents
+            trade.resolution = "sold"
+            trade.exit_price_cents = sell_price
+            trade.pnl_cents = (sell_price - fill_price) * trade.contracts
+            trade.resolved_at = now
+            # Also resolve the sell trade record
+            matched_sell.resolution = "sold"
+            matched_sell.pnl_cents = trade.pnl_cents
+            matched_sell.resolved_at = now
+            sold_early_count += 1
+            reported_sells.remove(matched_sell)
+            continue
 
-        # Check 2: did the market settle?
-        # Strip -YES/-NO to get base ticker for settlement lookup
+        # Check 2: did the market settle? (public API, no auth needed)
         base_ticker = trade.ticker.rsplit("-", 1)[0] if trade.ticker.endswith(("-YES", "-NO")) else trade.ticker
-        settlement = settlement_map.get(base_ticker)
+        if base_ticker not in market_cache:
+            market_cache[base_ticker] = await get_public_market(base_ticker)
+        market = market_cache[base_ticker]
 
-        if settlement:
-            # Settlement value: 100 cents if the outcome matches, 0 if not
-            market_result = settlement.get("result", "")
+        if market and market.get("status") == "settled":
+            market_result = market.get("result", "")
             if trade.side == "yes" and market_result == "yes":
                 payout = 100
             elif trade.side == "no" and market_result == "no":
@@ -430,7 +424,7 @@ async def settle_agent_trades(
                 # Voided / refund
                 trade.resolution = SettlementStatus.settled_push.value
                 trade.pnl_cents = 0
-                trade.exit_price_cents = fill_price  # refunded at cost
+                trade.exit_price_cents = fill_price
                 trade.resolved_at = now
                 settled_count += 1
                 continue
