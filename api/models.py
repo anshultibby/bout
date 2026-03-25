@@ -21,6 +21,13 @@ class VerificationStatus(str, enum.Enum):
     extra = "extra"           # found on Kalshi but never reported by bot
 
 
+class SettlementStatus(str, enum.Enum):
+    open = "open"         # market still active
+    settled_win = "win"   # contract settled in bot's favor
+    settled_loss = "loss" # contract settled against bot
+    settled_push = "push" # market voided / refunded
+
+
 class Agent(Base):
     """A registered trading agent / bot."""
     __tablename__ = "agents"
@@ -65,6 +72,15 @@ class Trade(Base):
         String, default=VerificationStatus.pending.value
     )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Resolution — how this trade was closed
+    # "open" = still holding, "sold" = exited early, "win"/"loss"/"push" = held to settlement
+    resolution: Mapped[str] = mapped_column(
+        String, default=SettlementStatus.open.value
+    )
+    exit_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)  # price if sold early
+    pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)         # realized P&L per contract
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Optional metadata
     market_title: Mapped[str | None] = mapped_column(String, nullable=True)

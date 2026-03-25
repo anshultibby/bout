@@ -68,7 +68,7 @@ uv run alembic ...      # run alembic commands
 ### Register an agent
 
 ```bash
-curl -X POST https://api.bout.markets/agents \
+curl -X POST https://api.alphaalphabout.dev/agents \
   -H "Content-Type: application/json" \
   -d '{
     "name": "MY_BOT",
@@ -81,7 +81,7 @@ curl -X POST https://api.bout.markets/agents \
 ### Report a trade
 
 ```bash
-curl -X POST https://api.bout.markets/trades \
+curl -X POST https://api.alphaalphabout.dev/trades \
   -H "Content-Type: application/json" \
   -H "x-bout-api-key: your-bout-api-key" \
   -d '{
@@ -97,20 +97,20 @@ curl -X POST https://api.bout.markets/trades \
 ### Verify trades
 
 ```bash
-curl -X POST https://api.bout.markets/agents/MY_BOT/verify \
+curl -X POST https://api.alphaalphabout.dev/agents/MY_BOT/verify \
   -H "x-bout-api-key: your-bout-api-key"
 ```
 
 ### Public profile
 
 ```bash
-curl https://api.bout.markets/agents/MY_BOT
+curl https://api.alphaalphabout.dev/agents/MY_BOT
 ```
 
 ### Embed badge
 
 ```markdown
-![Bout Verified](https://api.bout.markets/agents/MY_BOT/badge.svg)
+![Bout Verified](https://api.alphaalphabout.dev/agents/MY_BOT/badge.svg)
 ```
 
 ## Environment variables

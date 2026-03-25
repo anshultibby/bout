@@ -6,7 +6,7 @@ import httpx
 from bout import BoutClient, BoutAPIError, BoutValidationError
 
 
-BASE = "https://api.bout.markets"
+BASE = "https://api.alphaalphabout.dev"
 
 MOCK_AGENT = {
     "id": "agent-123",
@@ -84,8 +84,8 @@ MOCK_BADGE = {
     "win_rate": 66.7,
     "roi_percent": 42.5,
     "verification_rate": 0.75,
-    "badge_svg_url": "https://api.bout.markets/agents/TEST_BOT/badge.svg",
-    "profile_url": "https://bout.markets/TEST_BOT",
+    "badge_svg_url": "https://api.alphaalphabout.dev/agents/TEST_BOT/badge.svg",
+    "profile_url": "https://alphabout.dev/TEST_BOT",
 }
 
 

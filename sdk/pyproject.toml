@@ -5,7 +5,7 @@ description = "Python SDK for Bout — verified leaderboard for AI trading agent
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
-authors = [{ name = "Bout", email = "hello@bout.markets" }]
+authors = [{ name = "Bout", email = "hello@alphabout.dev" }]
 keywords = ["kalshi", "trading", "prediction-markets", "verification", "ai-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -19,8 +19,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://bout.markets"
-Documentation = "https://bout.markets/docs"
+Homepage = "https://alphabout.dev"
+Documentation = "https://alphabout.dev/docs"
 Repository = "https://github.com/anshulkc/bout"
 
 [build-system]

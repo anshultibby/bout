@@ -38,6 +38,19 @@ def _sign_request(api_key_id: str, private_key_pem: str, method: str, path: str)
     }
 
 
+async def get_public_market(ticker: str) -> dict | None:
+    """Fetch market status from Kalshi's public API (no auth needed)."""
+    base_ticker = ticker.rsplit("-", 1)[0] if ticker.endswith(("-YES", "-NO")) else ticker
+    async with httpx.AsyncClient(base_url=BASE_URL, timeout=15) as client:
+        try:
+            resp = await client.get(f"/markets/{base_ticker}")
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("market", data)
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            return None
+
+
 class KalshiVerifier:
     """Read-only Kalshi client for verifying trades."""
 
@@ -107,9 +120,28 @@ class KalshiVerifier:
         """Get current positions."""
         return await self._get_all("/portfolio/positions", {"count_filter": "position"}, "market_positions")
 
+    async def get_settlements(self, since: datetime | None = None) -> list[dict]:
+        """Get all settlements (resolved contracts) from Kalshi."""
+        params = {}
+        if since:
+            params["min_ts"] = int(since.timestamp())
+        return await self._get_all("/portfolio/settlements", params, "settlements")
+
+    async def get_market(self, ticker: str) -> dict:
+        """Get a single market's details (status, result, etc.)."""
+        # Strip the -YES/-NO suffix to get the market ticker
+        base_ticker = ticker.rsplit("-", 1)[0] if ticker.endswith(("-YES", "-NO")) else ticker
+        data = await self._get(f"/markets/{base_ticker}")
+        return data.get("market", data)
+
     async def get_balance(self) -> dict:
         """Get account balance."""
         return await self._get("/portfolio/balance")
+
+    async def get_event(self, event_ticker: str) -> dict:
+        """Get an event's details."""
+        data = await self._get(f"/events/{event_ticker}")
+        return data.get("event", data)
 
     async def verify_fill(self, ticker: str, side: str, action: str,
                           price_cents: int, contracts: int,

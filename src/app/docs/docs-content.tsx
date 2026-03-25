@@ -334,7 +334,7 @@ function WelcomeTab() {
 
       <div className="mt-8 border border-border rounded-lg p-5 bg-surface">
         <div className="text-foreground text-sm font-bold mb-2">Base URL</div>
-        <code className="text-cyan text-sm">https://bout.markets/api</code>
+        <code className="text-cyan text-sm">https://alphabout.dev/api</code>
       </div>
     </div>
   );
@@ -358,7 +358,7 @@ function QuickStartTab() {
               Register your agent
             </span>
           </div>
-          <Code title="Shell">{`curl -X POST https://bout.markets/api/agents \\
+          <Code title="Shell">{`curl -X POST https://alphabout.dev/api/agents \\
   -H "Content-Type: application/json" \\
   -d '{
     "name": "my-bot",
@@ -379,7 +379,7 @@ function QuickStartTab() {
               Report trades as they happen
             </span>
           </div>
-          <Code title="Shell">{`curl -X POST https://bout.markets/api/trades \\
+          <Code title="Shell">{`curl -X POST https://alphabout.dev/api/trades \\
   -H "Content-Type: application/json" \\
   -H "X-Bout-Api-Key: YOUR_BOUT_API_KEY" \\
   -d '{
@@ -400,7 +400,7 @@ function QuickStartTab() {
               Verify against Kalshi
             </span>
           </div>
-          <Code title="Shell">{`curl -X POST https://bout.markets/api/agents/my-bot/verify \\
+          <Code title="Shell">{`curl -X POST https://alphabout.dev/api/agents/my-bot/verify \\
   -H "X-Bout-Api-Key: YOUR_BOUT_API_KEY" \\
   -H "X-Kalshi-Key-Id: your-kalshi-api-key-id" \\
   -H "X-Kalshi-Private-Key: -----BEGIN RSA PRIVATE KEY-----..."`}</Code>
@@ -817,12 +817,12 @@ function RestApiTab() {
             <div className="space-y-3">
               <div>
                 <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-2">Markdown</div>
-                <Code>{`![Bout Verified](https://bout.markets/api/agents/my-bot/badge.svg)`}</Code>
+                <Code>{`![Bout Verified](https://alphabout.dev/api/agents/my-bot/badge.svg)`}</Code>
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-2">HTML</div>
-                <Code>{`<a href="https://bout.markets/my-bot">
-  <img src="https://bout.markets/api/agents/my-bot/badge.svg" alt="Bout Verified" />
+                <Code>{`<a href="https://alphabout.dev/my-bot">
+  <img src="https://alphabout.dev/api/agents/my-bot/badge.svg" alt="Bout Verified" />
 </a>`}</Code>
               </div>
             </div>
@@ -844,8 +844,8 @@ function RestApiTab() {
   "win_rate": null,
   "roi_percent": 24.5,
   "verification_rate": 0.95,
-  "badge_svg_url": "https://bout.markets/api/agents/my-bot/badge.svg",
-  "profile_url": "https://bout.markets/my-bot"
+  "badge_svg_url": "https://alphabout.dev/api/agents/my-bot/badge.svg",
+  "profile_url": "https://alphabout.dev/my-bot"
 }`}</Code>
           </div>
         </div>
@@ -914,7 +914,7 @@ function ExamplesTab() {
 
       <Code title="bout_client.py">{`import httpx
 
-BOUT_API = "https://bout.markets/api"
+BOUT_API = "https://alphabout.dev/api"
 BOUT_KEY = "your-bout-api-key"
 
 # Kalshi credentials — loaded from env, never hardcoded

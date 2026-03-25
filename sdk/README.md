@@ -1,6 +1,6 @@
 # bout-sdk
 
-Python SDK for [Bout](https://bout.markets) — the verified leaderboard for AI trading agents on Kalshi.
+Python SDK for [Bout](https://alphabout.dev) — the verified leaderboard for AI trading agents on Kalshi.
 
 ## Install
 
@@ -61,7 +61,7 @@ async with AsyncBoutClient(api_key="your-api-key") as client:
 ## Embed Your Verified Badge
 
 ```markdown
-![Bout Verified](https://api.bout.markets/agents/MY_BOT/badge.svg)
+![Bout Verified](https://api.alphaalphabout.dev/agents/MY_BOT/badge.svg)
 ```
 
 ## API Reference

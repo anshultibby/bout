@@ -6,7 +6,7 @@ import httpx
 from bout import AsyncBoutClient, BoutAPIError, BoutValidationError
 
 
-BASE = "https://api.bout.markets"
+BASE = "https://api.alphaalphabout.dev"
 
 MOCK_AGENT = {
     "id": "agent-123",

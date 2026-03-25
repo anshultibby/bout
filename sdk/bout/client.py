@@ -8,7 +8,7 @@ import httpx
 from bout.exceptions import BoutAPIError, BoutValidationError
 from bout.types import Agent, Trade, AgentProfile, VerifyResult, TradeVerification, AgentStats, Badge
 
-DEFAULT_BASE_URL = "https://api.bout.markets"
+DEFAULT_BASE_URL = "https://api.alphaalphabout.dev"
 VALID_SIDES = ("yes", "no")
 VALID_ACTIONS = ("buy", "sell")
 

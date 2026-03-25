@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
 from database import get_db, init_db
-from models import Agent, Trade, VerificationStatus
+from models import Agent, Trade, VerificationStatus, SettlementStatus
 from schemas import (
     AgentCreate, AgentResponse, AgentPublicProfile, AgentStats,
     TradeReport, TradeResponse, TradeVerificationResult, VerifyAllResult,
@@ -327,6 +327,131 @@ async def verify_agent_trades(
     )
 
 
+# ─── Settlement Sync ───
+
+@app.post("/agents/{agent_name}/settle", tags=["Settlement"])
+async def settle_agent_trades(
+    agent_name: str,
+    x_kalshi_key_id: str = Header(..., description="Your Kalshi API key ID"),
+    x_kalshi_private_key: str = Header(..., description="Your Kalshi RSA private key (PEM)"),
+    agent: Agent = Depends(get_agent_by_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Sync settlements for verified trades.
+
+    Checks Kalshi for:
+    1. Trades the bot sold early (matched sell fills) → computes P&L from buy-sell spread
+    2. Markets that have settled → computes P&L from settlement value
+
+    Call this periodically (e.g. daily) to keep your P&L up to date.
+    """
+    if agent.name != agent_name:
+        raise HTTPException(status_code=403, detail="API key does not match this agent")
+
+    verifier = KalshiVerifier(x_kalshi_key_id, x_kalshi_private_key)
+
+    # Get all verified BUY trades that are still open
+    result = await db.execute(
+        select(Trade).where(
+            Trade.agent_id == agent.id,
+            Trade.status == VerificationStatus.verified.value,
+            Trade.action == "buy",
+            Trade.resolution == SettlementStatus.open.value,
+        )
+    )
+    open_buys = result.scalars().all()
+
+    if not open_buys:
+        return {"settled": 0, "sold_early": 0, "still_open": 0}
+
+    # Pull all fills and settlements from Kalshi
+    try:
+        fills = await verifier.get_fills()
+        settlements = await verifier.get_settlements()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Kalshi API error: {exc.response.status_code}")
+
+    # Build lookup: ticker+side → list of sell fills (for early exits)
+    sell_fills: dict[str, list[dict]] = {}
+    for f in fills:
+        if f.get("action") == "sell":
+            key = f"{f.get('ticker')}:{f.get('side')}"
+            sell_fills.setdefault(key, []).append(f)
+
+    # Build lookup: ticker → settlement data
+    settlement_map: dict[str, dict] = {}
+    for s in settlements:
+        settlement_map[s.get("ticker", "")] = s
+
+    settled_count = 0
+    sold_early_count = 0
+    still_open = 0
+    now = datetime.now(timezone.utc)
+
+    for trade in open_buys:
+        fill_price = trade.kalshi_fill_price or trade.price_cents
+        sell_key = f"{trade.ticker}:{trade.side}"
+
+        # Check 1: did the bot sell early?
+        matched_sell = None
+        for sf in sell_fills.get(sell_key, []):
+            if sf.get("count") == trade.contracts:
+                matched_sell = sf
+                break
+
+        if matched_sell:
+            sell_price = matched_sell.get("yes_price") if trade.side == "yes" else matched_sell.get("no_price")
+            if sell_price is not None:
+                trade.resolution = "sold"
+                trade.exit_price_cents = sell_price
+                trade.pnl_cents = (sell_price - fill_price) * trade.contracts
+                trade.resolved_at = now
+                sold_early_count += 1
+                # Remove this sell fill so it's not matched again
+                sell_fills[sell_key].remove(matched_sell)
+                continue
+
+        # Check 2: did the market settle?
+        # Strip -YES/-NO to get base ticker for settlement lookup
+        base_ticker = trade.ticker.rsplit("-", 1)[0] if trade.ticker.endswith(("-YES", "-NO")) else trade.ticker
+        settlement = settlement_map.get(base_ticker)
+
+        if settlement:
+            # Settlement value: 100 cents if the outcome matches, 0 if not
+            market_result = settlement.get("result", "")
+            if trade.side == "yes" and market_result == "yes":
+                payout = 100
+            elif trade.side == "no" and market_result == "no":
+                payout = 100
+            elif market_result in ("yes", "no"):
+                payout = 0
+            else:
+                # Voided / refund
+                trade.resolution = SettlementStatus.settled_push.value
+                trade.pnl_cents = 0
+                trade.exit_price_cents = fill_price  # refunded at cost
+                trade.resolved_at = now
+                settled_count += 1
+                continue
+
+            trade.exit_price_cents = payout
+            trade.pnl_cents = (payout - fill_price) * trade.contracts
+            trade.resolution = SettlementStatus.settled_win.value if payout == 100 else SettlementStatus.settled_loss.value
+            trade.resolved_at = now
+            settled_count += 1
+        else:
+            still_open += 1
+
+    await db.commit()
+
+    return {
+        "settled": settled_count,
+        "sold_early": sold_early_count,
+        "still_open": still_open,
+    }
+
+
 # ─── Badge ───
 
 @app.get("/agents/{agent_name}/badge.svg", tags=["Badge"])
@@ -356,7 +481,7 @@ async def get_badge_info(agent_name: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Agent not found")
 
     stats = await _compute_stats(agent.id, db)
-    base_url = "https://bout.markets"  # TODO: make configurable
+    base_url = "https://alphabout.dev"  # TODO: make configurable
 
     return BadgeResponse(
         agent_name=agent.name,
@@ -464,7 +589,7 @@ def _find_matching_fill(
 
 
 async def _compute_stats(agent_id: str, db: AsyncSession) -> AgentStats:
-    """Compute verified stats for an agent."""
+    """Compute verified stats for an agent from real resolution data."""
     result = await db.execute(select(Trade).where(Trade.agent_id == agent_id))
     trades = result.scalars().all()
 
@@ -474,32 +599,23 @@ async def _compute_stats(agent_id: str, db: AsyncSession) -> AgentStats:
     pending = sum(1 for t in trades if t.status == VerificationStatus.pending.value)
     extra = sum(1 for t in trades if t.status == VerificationStatus.extra.value)
 
-    # Compute P&L from verified trades only
-    total_pnl_cents = 0
-    wins = 0
-    settled_count = 0
+    # P&L from resolved trades only (settled or sold early)
+    resolved = [t for t in trades if t.pnl_cents is not None and t.status == VerificationStatus.verified.value]
+    total_pnl_cents = sum(t.pnl_cents for t in resolved)
 
-    verified_trades = [t for t in trades if t.status == VerificationStatus.verified.value]
-    for t in verified_trades:
-        fill_price = t.kalshi_fill_price or t.price_cents
-        if t.action == "buy":
-            # Bought at fill_price, settles at 100 (win) or 0 (loss)
-            # For now we can't know settlement without more data,
-            # so we track cost basis
-            total_pnl_cents -= fill_price * t.contracts
-        else:
-            total_pnl_cents += fill_price * t.contracts
+    # Win rate: wins / resolved trades (sold early at profit counts as win)
+    wins = sum(1 for t in resolved if t.pnl_cents > 0)
+    win_rate = round((wins / len(resolved)) * 100, 1) if resolved else None
+
+    # ROI: total P&L / total capital invested
+    total_invested = sum(
+        (t.kalshi_fill_price or t.price_cents) * t.contracts
+        for t in resolved
+    )
+    roi = round((total_pnl_cents / total_invested) * 100, 1) if total_invested > 0 else None
 
     reported_count = total - extra
     verification_rate = (verified / reported_count) if reported_count > 0 else 0.0
-
-    # ROI placeholder — needs settlement data for real computation
-    total_invested = sum(
-        (t.kalshi_fill_price or t.price_cents) * t.contracts
-        for t in verified_trades
-        if t.action == "buy"
-    )
-    roi = (total_pnl_cents / total_invested * 100) if total_invested > 0 else None
 
     return AgentStats(
         total_trades=total,
@@ -507,7 +623,7 @@ async def _compute_stats(agent_id: str, db: AsyncSession) -> AgentStats:
         unverified_trades=unverified,
         pending_trades=pending,
         extra_trades=extra,
-        win_rate=None,  # needs settlement data
+        win_rate=win_rate,
         roi_percent=roi,
         total_pnl_cents=total_pnl_cents,
         verification_rate=round(verification_rate, 3),
