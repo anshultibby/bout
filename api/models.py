@@ -37,8 +37,8 @@ class Agent(Base):
     display_name: Mapped[str] = mapped_column(String)
     creator: Mapped[str] = mapped_column(String)  # e.g. X handle
     api_key: Mapped[str] = mapped_column(String, unique=True, default=new_id)  # bout API key
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     trades: Mapped[list["Trade"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
 
@@ -59,19 +59,19 @@ class Trade(Base):
     action: Mapped[str] = mapped_column(String)                       # "buy" or "sell"
     contracts: Mapped[int] = mapped_column(Integer)
     price_cents: Mapped[int] = mapped_column(Integer)                 # limit price in cents
-    reported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # What Kalshi says (filled in during verification)
     kalshi_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
     kalshi_fill_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     kalshi_fill_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    kalshi_fill_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    kalshi_fill_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Verification
     status: Mapped[str] = mapped_column(
         String, default=VerificationStatus.pending.value
     )
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Resolution — how this trade was closed
     # "open" = still holding, "sold" = exited early, "win"/"loss"/"push" = held to settlement
@@ -80,7 +80,7 @@ class Trade(Base):
     )
     exit_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)  # price if sold early
     pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)         # realized P&L per contract
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Optional metadata
     market_title: Mapped[str | None] = mapped_column(String, nullable=True)

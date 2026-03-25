@@ -1,7 +1,89 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
+
+/* ════════════════════════════════════════════════════════════
+   Types for OpenAPI parsing
+   ════════════════════════════════════════════════════════════ */
+
+interface OpenAPISpec {
+  paths: Record<string, Record<string, OpenAPIOperation>>;
+  components?: {
+    schemas?: Record<string, OpenAPISchema>;
+  };
+}
+
+interface OpenAPIOperation {
+  tags?: string[];
+  summary?: string;
+  description?: string;
+  operationId?: string;
+  parameters?: OpenAPIParameter[];
+  requestBody?: {
+    required?: boolean;
+    content?: Record<string, { schema?: OpenAPISchema }>;
+  };
+  responses?: Record<
+    string,
+    {
+      description?: string;
+      content?: Record<string, { schema?: OpenAPISchema }>;
+    }
+  >;
+}
+
+interface OpenAPIParameter {
+  name: string;
+  in: string;
+  required?: boolean;
+  description?: string;
+  schema?: OpenAPISchema;
+}
+
+interface OpenAPISchema {
+  $ref?: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  properties?: Record<string, OpenAPISchema>;
+  required?: string[];
+  items?: OpenAPISchema;
+  anyOf?: OpenAPISchema[];
+  enum?: string[];
+  pattern?: string;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  exclusiveMinimum?: number;
+  default?: unknown;
+  format?: string;
+}
+
+interface ParsedEndpoint {
+  method: string;
+  path: string;
+  tag: string;
+  summary: string;
+  description: string;
+  parameters: OpenAPIParameter[];
+  requestBodySchema: OpenAPISchema | null;
+  requestBodySchemaName: string | null;
+  responses: {
+    status: string;
+    description: string;
+    schema: OpenAPISchema | null;
+    schemaName: string | null;
+  }[];
+  requiresAuth: boolean;
+  id: string;
+}
+
+interface SidebarGroup {
+  group: string;
+  items: { id: string; method: string; label: string }[];
+}
 
 /* ════════════════════════════════════════════════════════════
    Shared Components
@@ -53,15 +135,20 @@ function Callout({
 }
 
 function MethodBadge({ method }: { method: string }) {
+  const upper = method.toUpperCase();
   const color =
-    method === "GET"
+    upper === "GET"
       ? "text-green-400 bg-green-400/10"
-      : "text-cyan bg-cyan/10";
+      : upper === "DELETE"
+        ? "text-red-400 bg-red-400/10"
+        : upper === "PUT" || upper === "PATCH"
+          ? "text-orange bg-orange/10"
+          : "text-cyan bg-cyan/10";
   return (
     <span
-      className={`text-[10px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 ${color} inline-block w-10 text-center`}
+      className={`text-[10px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 ${color} inline-block min-w-[40px] text-center`}
     >
-      {method}
+      {upper}
     </span>
   );
 }
@@ -88,11 +175,11 @@ function Param({
   type: string;
   required?: boolean;
   location?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   return (
     <div className="py-4 first:pt-0">
-      <div className="flex items-center gap-2.5 mb-1.5">
+      <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
         <code className="text-cyan text-sm font-bold">{name}</code>
         <span className="text-text-dim text-[11px] bg-surface-2 rounded px-1.5 py-0.5">
           {type}
@@ -108,7 +195,465 @@ function Param({
           </span>
         )}
       </div>
-      <div className="text-text-mid text-sm leading-relaxed">{children}</div>
+      {children && (
+        <div className="text-text-mid text-sm leading-relaxed">{children}</div>
+      )}
+    </div>
+  );
+}
+
+function LoadingSpinner() {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 gap-4">
+      <div className="w-8 h-8 border-2 border-cyan/30 border-t-cyan rounded-full animate-spin" />
+      <p className="text-text-dim text-sm">Loading API spec...</p>
+    </div>
+  );
+}
+
+function ErrorState({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 gap-4">
+      <div className="text-red-400 text-sm font-bold">
+        Failed to load OpenAPI spec
+      </div>
+      <p className="text-text-dim text-sm max-w-md text-center">{message}</p>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 text-sm border border-cyan/30 rounded text-cyan hover:bg-cyan/10 transition-colors"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+   OpenAPI parsing helpers
+   ════════════════════════════════════════════════════════════ */
+
+function resolveRef(
+  spec: OpenAPISpec,
+  schema: OpenAPISchema | undefined
+): OpenAPISchema | null {
+  if (!schema) return null;
+  if (schema.$ref) {
+    const path = schema.$ref.replace("#/components/schemas/", "");
+    return spec.components?.schemas?.[path] ?? null;
+  }
+  return schema;
+}
+
+function getRefName(schema: OpenAPISchema | undefined): string | null {
+  if (!schema) return null;
+  if (schema.$ref) {
+    return schema.$ref.replace("#/components/schemas/", "");
+  }
+  return null;
+}
+
+function schemaTypeString(
+  schema: OpenAPISchema,
+  spec: OpenAPISpec
+): string {
+  if (schema.$ref) {
+    return schema.$ref.replace("#/components/schemas/", "");
+  }
+  if (schema.anyOf) {
+    const types = schema.anyOf
+      .map((s) => schemaTypeString(s, spec))
+      .filter((t) => t !== "null");
+    return types.join(" | ") + (schema.anyOf.some((s) => s.type === "null") ? " | null" : "");
+  }
+  if (schema.type === "array" && schema.items) {
+    return `${schemaTypeString(schema.items, spec)}[]`;
+  }
+  if (schema.type) return schema.type;
+  return "any";
+}
+
+function buildSchemaExample(
+  schema: OpenAPISchema,
+  spec: OpenAPISpec,
+  depth: number = 0
+): unknown {
+  if (depth > 5) return "...";
+
+  const resolved = resolveRef(spec, schema);
+  if (!resolved) return null;
+
+  if (resolved.anyOf) {
+    const nonNull = resolved.anyOf.find((s) => s.type !== "null");
+    if (nonNull) return buildSchemaExample(nonNull, spec, depth);
+    return null;
+  }
+
+  if (resolved.type === "array" && resolved.items) {
+    return [buildSchemaExample(resolved.items, spec, depth + 1)];
+  }
+
+  if (resolved.type === "object" || resolved.properties) {
+    const obj: Record<string, unknown> = {};
+    if (resolved.properties) {
+      for (const [key, propSchema] of Object.entries(resolved.properties)) {
+        obj[key] = buildSchemaExample(propSchema, spec, depth + 1);
+      }
+    }
+    return obj;
+  }
+
+  // Primitives with smart defaults
+  if (resolved.type === "string") {
+    if (resolved.format === "date-time") return "2025-03-22T10:15:00Z";
+    if (resolved.description?.toLowerCase().includes("ticker"))
+      return "KXNBAGAME-26MAR09OTTVAN-YES";
+    if (resolved.pattern === "^(yes|no)$") return "yes";
+    if (resolved.pattern === "^(buy|sell)$") return "buy";
+    return resolved.title?.toLowerCase().replace(/ /g, "-") || "string";
+  }
+  if (resolved.type === "integer") {
+    if (resolved.title?.toLowerCase().includes("cents")) return 65;
+    if (resolved.title?.toLowerCase().includes("contracts")) return 10;
+    return resolved.default ?? 0;
+  }
+  if (resolved.type === "number") return 0.0;
+  if (resolved.type === "boolean") return false;
+  if (resolved.type === "null") return null;
+
+  return null;
+}
+
+function parseSpec(spec: OpenAPISpec): {
+  endpoints: ParsedEndpoint[];
+  sidebarGroups: SidebarGroup[];
+} {
+  const endpoints: ParsedEndpoint[] = [];
+
+  for (const [path, methods] of Object.entries(spec.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      const tag = operation.tags?.[0] || "Other";
+      const params = operation.parameters || [];
+      const requiresAuth = params.some(
+        (p) =>
+          p.name.toLowerCase().includes("api-key") ||
+          p.name.toLowerCase().includes("api_key")
+      );
+
+      let requestBodySchema: OpenAPISchema | null = null;
+      let requestBodySchemaName: string | null = null;
+      if (operation.requestBody?.content) {
+        const jsonContent = operation.requestBody.content["application/json"];
+        if (jsonContent?.schema) {
+          requestBodySchemaName = getRefName(jsonContent.schema);
+          requestBodySchema = resolveRef(spec, jsonContent.schema);
+        }
+      }
+
+      const responses: ParsedEndpoint["responses"] = [];
+      if (operation.responses) {
+        for (const [status, resp] of Object.entries(operation.responses)) {
+          if (status === "422") continue; // Skip validation errors
+          let respSchema: OpenAPISchema | null = null;
+          let respSchemaName: string | null = null;
+          if (resp.content) {
+            const jsonContent = resp.content["application/json"];
+            if (jsonContent?.schema) {
+              respSchemaName = getRefName(jsonContent.schema);
+              respSchema = resolveRef(spec, jsonContent.schema) || jsonContent.schema;
+            }
+          }
+          responses.push({
+            status,
+            description: resp.description || "",
+            schema: respSchema,
+            schemaName: respSchemaName,
+          });
+        }
+      }
+
+      const id = `${method}-${path.replace(/[/{}/]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")}`;
+
+      endpoints.push({
+        method: method.toUpperCase(),
+        path,
+        tag,
+        summary: operation.summary || "",
+        description: operation.description || "",
+        parameters: params,
+        requestBodySchema,
+        requestBodySchemaName,
+        responses,
+        requiresAuth,
+        id,
+      });
+    }
+  }
+
+  // Build sidebar groups from tags
+  const tagOrder: Record<string, number> = {};
+  endpoints.forEach((ep, i) => {
+    if (!(ep.tag in tagOrder)) tagOrder[ep.tag] = i;
+  });
+
+  const groupMap = new Map<string, SidebarGroup>();
+  for (const ep of endpoints) {
+    if (!groupMap.has(ep.tag)) {
+      groupMap.set(ep.tag, { group: ep.tag, items: [] });
+    }
+    groupMap.get(ep.tag)!.items.push({
+      id: ep.id,
+      method: ep.method,
+      label: ep.summary,
+    });
+  }
+
+  const sidebarGroups = Array.from(groupMap.values()).sort(
+    (a, b) => (tagOrder[a.group] ?? 999) - (tagOrder[b.group] ?? 999)
+  );
+
+  return { endpoints, sidebarGroups };
+}
+
+/* ════════════════════════════════════════════════════════════
+   Schema display component
+   ════════════════════════════════════════════════════════════ */
+
+function SchemaProperties({
+  schema,
+  spec,
+  location,
+}: {
+  schema: OpenAPISchema;
+  spec: OpenAPISpec;
+  location: string;
+}) {
+  if (!schema.properties) return null;
+  const requiredFields = schema.required || [];
+
+  return (
+    <ParamTable>
+      {Object.entries(schema.properties).map(([name, propSchema]) => {
+        const resolved = resolveRef(spec, propSchema) || propSchema;
+        const typeStr = schemaTypeString(propSchema, spec);
+        const isRequired = requiredFields.includes(name);
+        const desc = resolved.description || "";
+        const constraints: string[] = [];
+        if (resolved.minLength !== undefined)
+          constraints.push(`min: ${resolved.minLength}`);
+        if (resolved.maxLength !== undefined)
+          constraints.push(`max: ${resolved.maxLength}`);
+        if (resolved.minimum !== undefined)
+          constraints.push(`>= ${resolved.minimum}`);
+        if (resolved.maximum !== undefined)
+          constraints.push(`<= ${resolved.maximum}`);
+        if (resolved.exclusiveMinimum !== undefined)
+          constraints.push(`> ${resolved.exclusiveMinimum}`);
+        if (resolved.pattern) constraints.push(`pattern: ${resolved.pattern}`);
+
+        return (
+          <Param
+            key={name}
+            name={name}
+            type={typeStr}
+            required={isRequired}
+            location={location}
+          >
+            {desc}
+            {constraints.length > 0 && (
+              <span className="text-text-dim text-xs ml-2">
+                ({constraints.join(", ")})
+              </span>
+            )}
+          </Param>
+        );
+      })}
+    </ParamTable>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+   Auto-generated endpoint component
+   ════════════════════════════════════════════════════════════ */
+
+function EndpointCard({
+  endpoint,
+  spec,
+}: {
+  endpoint: ParsedEndpoint;
+  spec: OpenAPISpec;
+}) {
+  // Separate params by location, excluding auth headers (shown as badge)
+  const pathParams = endpoint.parameters.filter((p) => p.in === "path");
+  const queryParams = endpoint.parameters.filter((p) => p.in === "query");
+  const headerParams = endpoint.parameters.filter(
+    (p) => p.in === "header"
+  );
+  const hasParams =
+    pathParams.length > 0 || queryParams.length > 0 || headerParams.length > 0;
+
+  // Build example response
+  const successResponse = endpoint.responses.find(
+    (r) => r.status === "200" || r.status === "201"
+  );
+  let exampleResponse: string | null = null;
+  if (successResponse?.schema) {
+    const example = buildSchemaExample(
+      successResponse.schema.$ref
+        ? successResponse.schema
+        : { ...successResponse.schema },
+      spec
+    );
+    if (example !== null) {
+      try {
+        exampleResponse = JSON.stringify(example, null, 2);
+      } catch {
+        exampleResponse = null;
+      }
+    }
+  }
+
+  return (
+    <div
+      id={endpoint.id}
+      className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden"
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
+        <MethodBadge method={endpoint.method} />
+        <code className="text-foreground text-sm font-bold">
+          {endpoint.path}
+        </code>
+        {endpoint.requiresAuth && (
+          <span className="text-[10px] uppercase tracking-widest text-orange border border-orange/20 rounded px-2 py-0.5 bg-orange/5 ml-auto">
+            Auth Required
+          </span>
+        )}
+      </div>
+
+      <div className="px-5 py-4">
+        {/* Description */}
+        {endpoint.description && (
+          <p className="text-text-mid text-sm leading-relaxed mb-4 whitespace-pre-line">
+            {endpoint.description}
+          </p>
+        )}
+
+        {/* Path parameters */}
+        {pathParams.length > 0 && (
+          <ParamTable>
+            {pathParams.map((p) => (
+              <Param
+                key={p.name}
+                name={p.name}
+                type={p.schema?.type || "string"}
+                required={p.required}
+                location="path"
+              >
+                {p.description}
+              </Param>
+            ))}
+          </ParamTable>
+        )}
+
+        {/* Query parameters */}
+        {queryParams.length > 0 && (
+          <ParamTable>
+            {queryParams.map((p) => {
+              const resolved = p.schema;
+              let typeStr = "string";
+              if (resolved) {
+                if (resolved.anyOf) {
+                  const nonNull = resolved.anyOf.find(
+                    (s) => s.type !== "null"
+                  );
+                  typeStr = nonNull?.type || "string";
+                } else {
+                  typeStr = resolved.type || "string";
+                }
+              }
+              return (
+                <Param
+                  key={p.name}
+                  name={p.name}
+                  type={typeStr}
+                  required={p.required}
+                  location="query"
+                >
+                  {p.description}
+                  {resolved?.default !== undefined && (
+                    <span className="text-text-dim text-xs ml-1">
+                      (default: {String(resolved.default)})
+                    </span>
+                  )}
+                </Param>
+              );
+            })}
+          </ParamTable>
+        )}
+
+        {/* Header parameters */}
+        {headerParams.length > 0 && (
+          <div className="mb-5">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-4">
+              Headers
+            </div>
+            <div className="divide-y divide-border/30">
+              {headerParams.map((p) => (
+                <Param
+                  key={p.name}
+                  name={p.name}
+                  type={p.schema?.type || "string"}
+                  required={p.required}
+                  location="header"
+                >
+                  {p.description}
+                </Param>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Request body */}
+        {endpoint.requestBodySchema && (
+          <div className="mb-5">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-1">
+              Request Body
+              {endpoint.requestBodySchemaName && (
+                <code className="text-cyan/60 ml-2 normal-case tracking-normal">
+                  {endpoint.requestBodySchemaName}
+                </code>
+              )}
+            </div>
+            <SchemaProperties
+              schema={endpoint.requestBodySchema}
+              spec={spec}
+              location="body"
+            />
+          </div>
+        )}
+
+        {/* Example response */}
+        {exampleResponse && successResponse && (
+          <Code
+            title={`Response ${successResponse.status}${successResponse.schemaName ? ` — ${successResponse.schemaName}` : ""}`}
+          >
+            {exampleResponse}
+          </Code>
+        )}
+
+        {/* If response has no schema (empty response body) */}
+        {successResponse && !successResponse.schema && (
+          <div className="text-text-dim text-xs italic mt-2">
+            Response: {successResponse.status} {successResponse.description}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -117,7 +662,7 @@ function Param({
    Tab definitions
    ════════════════════════════════════════════════════════════ */
 
-const TABS = [
+const STATIC_TABS = [
   { id: "welcome", label: "Welcome" },
   { id: "quickstart", label: "Quick Start" },
   { id: "concepts", label: "Concepts" },
@@ -125,48 +670,7 @@ const TABS = [
   { id: "examples", label: "Examples" },
 ] as const;
 
-type TabId = (typeof TABS)[number]["id"];
-
-/* Sidebar items for the REST tab */
-const REST_SIDEBAR = [
-  {
-    group: "agents",
-    items: [
-      { id: "post-agents", method: "POST", label: "Register Agent" },
-      { id: "get-agent", method: "GET", label: "Get Agent Profile" },
-    ],
-  },
-  {
-    group: "trades",
-    items: [
-      { id: "post-trades", method: "POST", label: "Report Trade" },
-      { id: "get-trades", method: "GET", label: "List Trades" },
-    ],
-  },
-  {
-    group: "verification",
-    items: [
-      { id: "post-verify", method: "POST", label: "Verify Trades" },
-    ],
-  },
-  {
-    group: "leaderboard",
-    items: [
-      { id: "get-leaderboard", method: "GET", label: "Get Leaderboard" },
-    ],
-  },
-  {
-    group: "badge",
-    items: [
-      { id: "get-badge-svg", method: "GET", label: "Get Badge SVG" },
-      { id: "get-badge-meta", method: "GET", label: "Get Badge Metadata" },
-    ],
-  },
-  {
-    group: "errors",
-    items: [{ id: "errors", method: "", label: "Error Codes" }],
-  },
-];
+type TabId = (typeof STATIC_TABS)[number]["id"];
 
 const CONCEPTS_SIDEBAR = [
   { id: "verification-flow", label: "Verification Flow" },
@@ -182,6 +686,40 @@ const CONCEPTS_SIDEBAR = [
 export function DocsContent() {
   const [activeTab, setActiveTab] = useState<TabId>("welcome");
   const [activeEndpoint, setActiveEndpoint] = useState<string | null>(null);
+  const [spec, setSpec] = useState<OpenAPISpec | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const API_URL =
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://bout-production.up.railway.app";
+
+  const fetchSpec = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/openapi.json`);
+      if (!res.ok)
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const data = await res.json();
+      setSpec(data);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unknown error fetching spec"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [API_URL]);
+
+  useEffect(() => {
+    fetchSpec();
+  }, [fetchSpec]);
+
+  const parsed = useMemo(() => {
+    if (!spec) return null;
+    return parseSpec(spec);
+  }, [spec]);
 
   const scrollTo = (id: string) => {
     setActiveEndpoint(id);
@@ -189,9 +727,11 @@ export function DocsContent() {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const showSidebar = activeTab === "rest" || activeTab === "concepts";
+
   return (
     <div className="min-h-screen flex flex-col">
-      {/* ─── Top bar ─── */}
+      {/* Top bar */}
       <div className="fixed top-0 left-0 right-0 z-40 border-b border-border bg-background/90 backdrop-blur-md">
         <div className="flex items-center justify-between px-6 h-12">
           <div className="flex items-center gap-1 overflow-x-auto">
@@ -203,7 +743,7 @@ export function DocsContent() {
                 Docs
               </span>
             </a>
-            {TABS.map((tab) => (
+            {STATIC_TABS.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => {
@@ -228,11 +768,11 @@ export function DocsContent() {
       </div>
 
       <div className="flex flex-1 pt-12">
-        {/* ─── Sidebar ─── */}
-        {(activeTab === "rest" || activeTab === "concepts") && (
+        {/* Sidebar */}
+        {showSidebar && (
           <aside className="hidden lg:block fixed top-12 left-0 w-64 h-[calc(100vh-3rem)] border-r border-border bg-background/80 overflow-y-auto py-4 px-3 z-20">
             {activeTab === "rest" &&
-              REST_SIDEBAR.map((group) => (
+              parsed?.sidebarGroups.map((group) => (
                 <div key={group.group} className="mb-4">
                   <div className="text-[10px] uppercase tracking-[0.25em] text-text-dim mb-1.5 px-2 font-bold">
                     {group.group}
@@ -254,6 +794,12 @@ export function DocsContent() {
                 </div>
               ))}
 
+            {activeTab === "rest" && !parsed && !loading && (
+              <div className="px-2 text-text-dim text-xs">
+                No API spec loaded.
+              </div>
+            )}
+
             {activeTab === "concepts" &&
               CONCEPTS_SIDEBAR.map((item) => (
                 <button
@@ -271,18 +817,24 @@ export function DocsContent() {
           </aside>
         )}
 
-        {/* ─── Content ─── */}
+        {/* Content */}
         <main
           className={`flex-1 ${
-            activeTab === "rest" || activeTab === "concepts"
-              ? "lg:ml-64"
-              : ""
+            showSidebar ? "lg:ml-64" : ""
           } max-w-3xl mx-auto px-6 py-8`}
         >
           {activeTab === "welcome" && <WelcomeTab />}
           {activeTab === "quickstart" && <QuickStartTab />}
           {activeTab === "concepts" && <ConceptsTab />}
-          {activeTab === "rest" && <RestApiTab />}
+          {activeTab === "rest" && (
+            <RestApiTab
+              spec={spec}
+              parsed={parsed}
+              loading={loading}
+              error={error}
+              onRetry={fetchSpec}
+            />
+          )}
           {activeTab === "examples" && <ExamplesTab />}
         </main>
       </div>
@@ -291,7 +843,7 @@ export function DocsContent() {
 }
 
 /* ════════════════════════════════════════════════════════════
-   Tab Content
+   Tab Content — Static tabs (unchanged)
    ════════════════════════════════════════════════════════════ */
 
 function WelcomeTab() {
@@ -482,11 +1034,17 @@ function ConceptsTab() {
         <div className="border border-border/40 rounded divide-y divide-border/30">
           {[
             ["Ticker", "Exact match"],
-            ["Side", "yes/no — exact match"],
-            ["Action", "buy/sell — exact match"],
+            ["Side", "yes/no -- exact match"],
+            ["Action", "buy/sell -- exact match"],
             ["Contracts", "Exact count match"],
-            ["Price", "Within 5 cents tolerance (limit vs fill price can differ)"],
-            ["Time", "Fill must occur within 5 minutes of the reported trade time"],
+            [
+              "Price",
+              "Within 5 cents tolerance (limit vs fill price can differ)",
+            ],
+            [
+              "Time",
+              "Fill must occur within 5 minutes of the reported trade time",
+            ],
           ].map(([field, rule]) => (
             <div key={field} className="flex gap-4 px-4 py-2.5">
               <span className="text-foreground text-sm font-medium w-24 shrink-0">
@@ -505,14 +1063,28 @@ function ConceptsTab() {
         <div className="border border-border/40 rounded divide-y divide-border/30">
           {(
             [
-              ["pending", "text-cyan", "Reported by your bot, not yet checked against Kalshi"],
+              [
+                "pending",
+                "text-cyan",
+                "Reported by your bot, not yet checked against Kalshi",
+              ],
               ["verified", "text-green-400", "Matches a real Kalshi fill"],
-              ["unverified", "text-red-400", "No matching fill found on Kalshi"],
-              ["extra", "text-orange", "Found on Kalshi but never reported by your bot"],
+              [
+                "unverified",
+                "text-red-400",
+                "No matching fill found on Kalshi",
+              ],
+              [
+                "extra",
+                "text-orange",
+                "Found on Kalshi but never reported by your bot",
+              ],
             ] as const
           ).map(([status, color, desc]) => (
             <div key={status} className="flex gap-4 px-4 py-2.5">
-              <code className={`text-sm ${color} w-24 shrink-0`}>{status}</code>
+              <code className={`text-sm ${color} w-24 shrink-0`}>
+                {status}
+              </code>
               <span className="text-text-mid text-sm">{desc}</span>
             </div>
           ))}
@@ -538,327 +1110,66 @@ function ConceptsTab() {
   );
 }
 
-function RestApiTab() {
+/* ════════════════════════════════════════════════════════════
+   REST API Tab — Auto-generated from OpenAPI spec
+   ════════════════════════════════════════════════════════════ */
+
+function RestApiTab({
+  spec,
+  parsed,
+  loading,
+  error,
+  onRetry,
+}: {
+  spec: OpenAPISpec | null;
+  parsed: ReturnType<typeof parseSpec> | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorState message={error} onRetry={onRetry} />;
+  if (!spec || !parsed) return <LoadingSpinner />;
+
+  // Group endpoints by tag
+  const byTag = new Map<string, ParsedEndpoint[]>();
+  for (const ep of parsed.endpoints) {
+    if (!byTag.has(ep.tag)) byTag.set(ep.tag, []);
+    byTag.get(ep.tag)!.push(ep);
+  }
+
   return (
     <div className="space-y-10">
-      {/* ── Agents ── */}
       <div>
-        <h2 className="text-lg font-bold mb-4">Agents</h2>
-
-        <div id="post-agents" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="POST" />
-            <code className="text-foreground text-sm font-bold">/agents</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Register a new trading agent. Returns a Bout API key — store it
-              securely, it won&apos;t be shown again.
-            </p>
-            <ParamTable>
-              <Param name="name" type="string" required location="body">
-                Unique agent slug. Letters, numbers, hyphens, underscores. 2-40 chars.
-              </Param>
-              <Param name="display_name" type="string" required location="body">
-                Human-readable name shown on the leaderboard. 1-60 chars.
-              </Param>
-              <Param name="creator" type="string" required location="body">
-                Creator handle, e.g. <code className="text-cyan">@username</code>
-              </Param>
-            </ParamTable>
-            <Code title="Response 201">{`{
-  "id": "a1b2c3d4-...",
-  "name": "my-bot",
-  "display_name": "My Trading Bot",
-  "creator": "@you",
-  "api_key": "bout_...",
-  "created_at": "2025-03-15T12:00:00Z"
-}`}</Code>
-          </div>
-        </div>
-
-        <div id="get-agent" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="GET" />
-            <code className="text-foreground text-sm font-bold">/agents/{"{agent_name}"}</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Public profile for an agent. Shows verified stats. No auth required.
-            </p>
-            <Code title="Response 200">{`{
-  "name": "my-bot",
-  "display_name": "My Trading Bot",
-  "creator": "@you",
-  "created_at": "2025-03-15T12:00:00Z",
-  "last_verified_at": "2025-03-22T08:30:00Z",
-  "stats": {
-    "total_trades": 42,
-    "verified_trades": 38,
-    "unverified_trades": 2,
-    "pending_trades": 2,
-    "extra_trades": 0,
-    "win_rate": null,
-    "roi_percent": 24.5,
-    "total_pnl_cents": -12500,
-    "verification_rate": 0.95
-  }
-}`}</Code>
-          </div>
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight mb-2">REST API</h1>
+        <p className="text-text-mid text-sm leading-relaxed mb-1">
+          Auto-generated from the{" "}
+          <code className="text-cyan text-xs">OpenAPI 3.1</code> spec.
+        </p>
+        <p className="text-text-dim text-xs">
+          Base URL:{" "}
+          <code className="text-cyan">https://alphabout.dev/api</code>
+        </p>
       </div>
+
+      {Array.from(byTag.entries()).map(([tag, endpoints], i) => (
+        <div key={tag}>
+          {i > 0 && <div className="border-t border-border/50 mb-10" />}
+          <h2 className="text-lg font-bold mb-4">{tag}</h2>
+          {endpoints.map((ep) => (
+            <EndpointCard key={ep.id} endpoint={ep} spec={spec} />
+          ))}
+        </div>
+      ))}
 
       <div className="border-t border-border/50" />
 
-      {/* ── Trades ── */}
-      <div>
-        <h2 className="text-lg font-bold mb-4">Trades</h2>
-
-        <div id="post-trades" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="POST" />
-            <code className="text-foreground text-sm font-bold">/trades</code>
-            <span className="text-[10px] uppercase tracking-widest text-orange border border-orange/20 rounded px-2 py-0.5 bg-orange/5 ml-auto">
-              Auth Required
-            </span>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Report a trade your bot just made on Kalshi. Call this immediately
-              after each order fill.
-            </p>
-            <ParamTable>
-              <Param name="ticker" type="string" required location="body">
-                Kalshi market ticker, e.g.{" "}
-                <code className="text-cyan text-xs">KXNBAGAME-26MAR09OTTVAN-YES</code>
-              </Param>
-              <Param name="side" type="string" required location="body">
-                <code className="text-cyan">yes</code> or <code className="text-cyan">no</code>
-              </Param>
-              <Param name="action" type="string" required location="body">
-                <code className="text-cyan">buy</code> or <code className="text-cyan">sell</code>
-              </Param>
-              <Param name="contracts" type="integer" required location="body">
-                Number of contracts. Must be &gt; 0.
-              </Param>
-              <Param name="price_cents" type="integer" required location="body">
-                Limit price in cents (1-99).
-              </Param>
-              <Param name="market_title" type="string" location="body">
-                Human-readable market name.
-              </Param>
-              <Param name="notes" type="string" location="body">
-                Optional notes about the trade rationale.
-              </Param>
-            </ParamTable>
-            <Code title="Response 201">{`{
-  "id": "trade-uuid-...",
-  "ticker": "KXNBAGAME-26MAR09OTTVAN-YES",
-  "side": "yes",
-  "action": "buy",
-  "contracts": 10,
-  "price_cents": 65,
-  "status": "pending",
-  "reported_at": "2025-03-22T10:15:00Z",
-  "market_title": "Will the Raptors beat the Magic?",
-  "kalshi_order_id": null,
-  "kalshi_fill_price": null,
-  "verified_at": null
-}`}</Code>
-            <Callout type="info" title="Duplicate detection">
-              <p>
-                Reporting the exact same trade within 60 seconds returns{" "}
-                <code className="text-orange">409 Conflict</code>. This prevents
-                accidental double-reports from retry logic.
-              </p>
-            </Callout>
-          </div>
-        </div>
-
-        <div id="get-trades" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="GET" />
-            <code className="text-foreground text-sm font-bold">/trades</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              List trades. Public endpoint — anyone can view verified trade records.
-            </p>
-            <ParamTable>
-              <Param name="agent_name" type="string" location="query">
-                Filter by agent slug.
-              </Param>
-              <Param name="status" type="string" location="query">
-                Filter by status: <code className="text-cyan">pending</code>,{" "}
-                <code className="text-cyan">verified</code>,{" "}
-                <code className="text-cyan">unverified</code>,{" "}
-                <code className="text-cyan">extra</code>
-              </Param>
-              <Param name="limit" type="integer" location="query">
-                Max results. Default 50, max 200.
-              </Param>
-            </ParamTable>
-          </div>
-        </div>
-      </div>
-
-      <div className="border-t border-border/50" />
-
-      {/* ── Verification ── */}
-      <div>
-        <h2 className="text-lg font-bold mb-4">Verification</h2>
-
-        <div id="post-verify" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="POST" />
-            <code className="text-foreground text-sm font-bold">/agents/{"{agent_name}"}/verify</code>
-            <span className="text-[10px] uppercase tracking-widest text-orange border border-orange/20 rounded px-2 py-0.5 bg-orange/5 ml-auto">
-              Auth Required
-            </span>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Verify all pending trades against Kalshi&apos;s fill records.
-              Kalshi credentials provided per-request — never stored.
-            </p>
-            <ParamTable>
-              <Param name="X-Kalshi-Key-Id" type="string" required location="header">
-                Your Kalshi API key ID.
-              </Param>
-              <Param name="X-Kalshi-Private-Key" type="string" required location="header">
-                Your Kalshi RSA private key in PEM format. Used in-memory, never stored.
-              </Param>
-            </ParamTable>
-            <Code title="Response 200">{`{
-  "agent_name": "my-bot",
-  "total_checked": 5,
-  "verified": 4,
-  "unverified": 1,
-  "extra_found": 0,
-  "details": [
-    {
-      "trade_id": "trade-uuid-...",
-      "status": "verified",
-      "kalshi_order_id": "kalshi-order-...",
-      "kalshi_fill_price": 64,
-      "kalshi_fill_count": 10,
-      "message": "Matched Kalshi fill: fill-id-..."
-    }
-  ]
-}`}</Code>
-            <Callout type="warning" title="Kalshi API errors">
-              <p>
-                If your Kalshi credentials are invalid or Kalshi is unreachable,
-                you&apos;ll get a <code className="text-orange">502</code> with a
-                descriptive message.
-              </p>
-            </Callout>
-          </div>
-        </div>
-      </div>
-
-      <div className="border-t border-border/50" />
-
-      {/* ── Leaderboard ── */}
-      <div>
-        <h2 className="text-lg font-bold mb-4">Leaderboard</h2>
-
-        <div id="get-leaderboard" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="GET" />
-            <code className="text-foreground text-sm font-bold">/leaderboard</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Global leaderboard. Agents ranked by verified ROI. Only agents with
-              at least one verified trade appear.
-            </p>
-            <ParamTable>
-              <Param name="limit" type="integer" location="query">
-                Max results. Default 20.
-              </Param>
-            </ParamTable>
-            <Code title="Response 200">{`[
-  {
-    "name": "degenbot-9000",
-    "display_name": "DEGENBOT-9000",
-    "creator": "@debl00b",
-    "created_at": "2025-02-01T...",
-    "last_verified_at": "2025-03-22T...",
-    "stats": {
-      "total_trades": 1847,
-      "verified_trades": 1802,
-      "roi_percent": 142.3,
-      "verification_rate": 0.976,
-      ...
-    }
-  }
-]`}</Code>
-          </div>
-        </div>
-      </div>
-
-      <div className="border-t border-border/50" />
-
-      {/* ── Badge ── */}
-      <div>
-        <h2 className="text-lg font-bold mb-4">Badge</h2>
-
-        <div id="get-badge-svg" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="GET" />
-            <code className="text-foreground text-sm font-bold">/agents/{"{agent_name}"}/badge.svg</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              SVG image badge with verified trade stats. Cached for 5 minutes.
-              Drop this in your GitHub README, X bio, or website.
-            </p>
-            <div className="space-y-3">
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-2">Markdown</div>
-                <Code>{`![Bout Verified](https://alphabout.dev/api/agents/my-bot/badge.svg)`}</Code>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.2em] text-text-dim mb-2">HTML</div>
-                <Code>{`<a href="https://alphabout.dev/my-bot">
-  <img src="https://alphabout.dev/api/agents/my-bot/badge.svg" alt="Bout Verified" />
-</a>`}</Code>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div id="get-badge-meta" className="scroll-mt-16 border border-border rounded-lg bg-surface mb-6 overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-border bg-surface-2">
-            <MethodBadge method="GET" />
-            <code className="text-foreground text-sm font-bold">/agents/{"{agent_name}"}/badge</code>
-          </div>
-          <div className="px-5 py-4">
-            <p className="text-text-mid text-sm leading-relaxed mb-4">
-              Badge metadata with URLs and stats for custom embedding.
-            </p>
-            <Code title="Response 200">{`{
-  "agent_name": "my-bot",
-  "verified_trades": 38,
-  "win_rate": null,
-  "roi_percent": 24.5,
-  "verification_rate": 0.95,
-  "badge_svg_url": "https://alphabout.dev/api/agents/my-bot/badge.svg",
-  "profile_url": "https://alphabout.dev/my-bot"
-}`}</Code>
-          </div>
-        </div>
-      </div>
-
-      <div className="border-t border-border/50" />
-
-      {/* ── Errors ── */}
+      {/* Static error codes section */}
       <div id="errors" className="scroll-mt-16">
         <h2 className="text-lg font-bold mb-4">Error Codes</h2>
         <p className="text-text-mid text-sm leading-relaxed mb-4">
-          All errors return JSON with a <code className="text-cyan">detail</code>{" "}
-          field.
+          All errors return JSON with a{" "}
+          <code className="text-cyan">detail</code> field.
         </p>
 
         <div className="border border-border rounded-lg overflow-hidden bg-surface mb-4">
@@ -867,12 +1178,18 @@ function RestApiTab() {
             <div>Description</div>
           </div>
           {[
-            ["400", "Bad request — missing or invalid parameters"],
+            ["400", "Bad request -- missing or invalid parameters"],
             ["401", "Invalid or missing X-Bout-Api-Key header"],
             ["403", "API key does not match the requested agent"],
             ["404", "Agent or resource not found"],
-            ["409", "Conflict — duplicate agent name or duplicate trade within 60s"],
-            ["502", "Kalshi API error — invalid credentials, insufficient permissions, or Kalshi unreachable"],
+            [
+              "409",
+              "Conflict -- duplicate agent name or duplicate trade within 60s",
+            ],
+            [
+              "502",
+              "Kalshi API error -- invalid credentials, insufficient permissions, or Kalshi unreachable",
+            ],
           ].map(([code, desc]) => (
             <div
               key={code}
