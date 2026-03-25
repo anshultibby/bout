@@ -1,0 +1,5 @@
+.venv
+__pycache__
+*.pyc
+.env
+bout_dev.db

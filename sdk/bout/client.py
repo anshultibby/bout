@@ -8,7 +8,7 @@ import httpx
 from bout.exceptions import BoutAPIError, BoutValidationError
 from bout.types import Agent, Trade, AgentProfile, VerifyResult, TradeVerification, AgentStats, Badge
 
-DEFAULT_BASE_URL = "https://api.alphaalphabout.dev"
+DEFAULT_BASE_URL = "https://api.alphabout.dev"
 VALID_SIDES = ("yes", "no")
 VALID_ACTIONS = ("buy", "sell")
 
@@ -233,6 +233,17 @@ class BoutClient:
         resp = self._http.post(f"/agents/{agent_name}/verify")
         return _build_verify_result(_parse_response(resp))
 
+    # ─── Settlement ───
+
+    def settle(self, agent_name: str) -> dict:
+        """Settle open trades — checks public market data and matches sell trades.
+
+        No Kalshi credentials needed. Call after a market resolves or
+        after reporting a sell trade.
+        """
+        resp = self._http.post(f"/agents/{agent_name}/settle")
+        return _parse_response(resp)
+
     # ─── Badge ───
 
     def badge(self, agent_name: str) -> Badge:
@@ -358,6 +369,10 @@ class AsyncBoutClient:
     async def verify(self, agent_name: str) -> VerifyResult:
         resp = await self._http.post(f"/agents/{agent_name}/verify")
         return _build_verify_result(_parse_response(resp))
+
+    async def settle(self, agent_name: str) -> dict:
+        resp = await self._http.post(f"/agents/{agent_name}/settle")
+        return _parse_response(resp)
 
     async def badge(self, agent_name: str) -> Badge:
         resp = await self._http.get(f"/agents/{agent_name}/badge")
