@@ -13,7 +13,7 @@ from database import get_db, init_db
 from models import Agent, Trade, VerificationStatus, SettlementStatus
 from schemas import (
     AgentCreate, AgentResponse, AgentPublicProfile, AgentStats,
-    TradeReport, TradeResponse, TradeVerificationResult, VerifyAllResult,
+    TradeReport, BatchTradeReport, TradeResponse, TradeVerificationResult, VerifyAllResult,
     BadgeResponse,
 )
 from kalshi_client import KalshiVerifier, get_public_market
@@ -128,27 +128,43 @@ async def report_trade(
 
     Call this right after your bot places an order. Bout will log it
     and later verify it against Kalshi's fill records.
+
+    - **price_cents** is optional — Bout will use the actual fill price from Kalshi during verification.
+    - **kalshi_order_id** is optional — if provided, verification does an exact order lookup instead of fuzzy matching.
     """
-    # Duplicate detection: same agent, ticker, side, action, contracts, price within 60s
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+    trade = await _create_trade(body, agent, db)
+    return _trade_to_response(trade)
+
+
+@app.post("/trades/batch", response_model=list[TradeResponse], status_code=201, tags=["Trades"])
+async def report_trades_batch(
+    body: BatchTradeReport,
+    agent: Agent = Depends(get_agent_by_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Report multiple trades at once (up to 100).
+
+    Same as POST /trades but batched. Useful when your bot makes
+    several trades per tick.
+    """
+    results = []
+    for trade_report in body.trades:
+        trade = await _create_trade(trade_report, agent, db)
+        results.append(_trade_to_response(trade))
+    return results
+
+
+async def _create_trade(body: TradeReport, agent: Agent, db: AsyncSession) -> Trade:
+    """Create a single trade record with duplicate detection by Kalshi order ID."""
     dup_check = await db.execute(
         select(Trade).where(
-            and_(
-                Trade.agent_id == agent.id,
-                Trade.ticker == body.ticker,
-                Trade.side == body.side,
-                Trade.action == body.action,
-                Trade.contracts == body.contracts,
-                Trade.price_cents == body.price_cents,
-                Trade.reported_at >= cutoff,
-            )
+            Trade.agent_id == agent.id,
+            Trade.kalshi_order_id == body.kalshi_order_id,
         )
     )
     if dup_check.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail="Duplicate trade: a matching trade was reported in the last 60 seconds",
-        )
+        raise HTTPException(status_code=409, detail=f"Trade with order_id '{body.kalshi_order_id}' already reported")
 
     trade = Trade(
         agent_id=agent.id,
@@ -157,6 +173,7 @@ async def report_trade(
         action=body.action,
         contracts=body.contracts,
         price_cents=body.price_cents,
+        kalshi_order_id=body.kalshi_order_id,
         market_title=body.market_title,
         notes=body.notes,
         status=VerificationStatus.pending.value,
@@ -164,8 +181,7 @@ async def report_trade(
     db.add(trade)
     await db.commit()
     await db.refresh(trade)
-
-    return _trade_to_response(trade)
+    return trade
 
 
 @app.get("/trades", response_model=list[TradeResponse], tags=["Trades"])
@@ -257,19 +273,27 @@ async def verify_agent_trades(
     verified_count = 0
     unverified_count = 0
 
+    # Build order_id → fill lookup for exact matching
+    fills_by_order_id: dict[str, dict] = {}
+    for f in fills:
+        oid = f.get("order_id", "")
+        if oid:
+            fills_by_order_id[oid] = f
+
     for trade in pending_trades:
-        match = _find_matching_fill(trade, fills, used_fill_ids)
+        match = fills_by_order_id.get(trade.kalshi_order_id)
 
         if match:
-            fill_id = match.get("trade_id", match.get("order_id", ""))
-            used_fill_ids.add(fill_id)
+            fill_price = match.get("yes_price") if trade.side == "yes" else match.get("no_price")
 
             trade.status = VerificationStatus.verified.value
-            trade.kalshi_order_id = match.get("order_id")
-            trade.kalshi_fill_price = match.get("yes_price") if trade.side == "yes" else match.get("no_price")
+            trade.kalshi_fill_price = fill_price
             trade.kalshi_fill_count = match.get("count")
             trade.verified_at = datetime.now(timezone.utc)
-            # Populate fill time from Kalshi data
+            # Use actual fill price if bot didn't report one
+            if trade.price_cents is None and fill_price is not None:
+                trade.price_cents = fill_price
+            # Populate fill time
             fill_ts = match.get("created_time") or match.get("ts")
             if fill_ts:
                 try:
@@ -284,7 +308,7 @@ async def verify_agent_trades(
                 kalshi_order_id=trade.kalshi_order_id,
                 kalshi_fill_price=trade.kalshi_fill_price,
                 kalshi_fill_count=trade.kalshi_fill_count,
-                message=f"Matched Kalshi fill: {fill_id}",
+                message=f"Verified via Kalshi order {trade.kalshi_order_id}",
             ))
         else:
             trade.status = VerificationStatus.unverified.value
@@ -294,10 +318,10 @@ async def verify_agent_trades(
             details.append(TradeVerificationResult(
                 trade_id=trade.id,
                 status="unverified",
-                kalshi_order_id=None,
+                kalshi_order_id=trade.kalshi_order_id,
                 kalshi_fill_price=None,
                 kalshi_fill_count=None,
-                message="No matching Kalshi fill found",
+                message=f"Order {trade.kalshi_order_id} not found in Kalshi fills",
             ))
 
     # Extra detection: fills on Kalshi that no trade in our system references
@@ -533,53 +557,9 @@ def _trade_to_response(trade: Trade) -> TradeResponse:
         kalshi_order_id=trade.kalshi_order_id,
         kalshi_fill_price=trade.kalshi_fill_price,
         verified_at=trade.verified_at,
+        resolution=trade.resolution,
+        pnl_cents=trade.pnl_cents,
     )
-
-
-def _parse_fill_time(fill: dict) -> datetime | None:
-    """Extract and parse the fill timestamp from Kalshi data."""
-    raw = fill.get("created_time") or fill.get("ts")
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def _find_matching_fill(
-    trade: Trade, fills: list[dict], used_ids: set[str],
-    time_tolerance_seconds: int = 300,
-) -> dict | None:
-    """Find a Kalshi fill that matches a reported trade.
-
-    Matches on ticker, side, action, contract count, price (±5c),
-    and fill time (within tolerance of the reported_at timestamp).
-    """
-    for fill in fills:
-        fill_id = fill.get("trade_id", fill.get("order_id", ""))
-        if fill_id in used_ids:
-            continue
-
-        if (fill.get("ticker") == trade.ticker and
-            fill.get("side") == trade.side and
-            fill.get("action") == trade.action and
-            fill.get("count") == trade.contracts):
-            # Price tolerance: fill price may differ from limit price
-            fill_price = fill.get("yes_price") if trade.side == "yes" else fill.get("no_price")
-            if fill_price is None or abs(fill_price - trade.price_cents) > 5:
-                continue
-
-            # Time tolerance: fill must be near the reported trade time
-            fill_time = _parse_fill_time(fill)
-            if fill_time is not None:
-                reported = trade.reported_at.replace(tzinfo=timezone.utc) if trade.reported_at.tzinfo is None else trade.reported_at
-                delta = abs((fill_time - reported).total_seconds())
-                if delta > time_tolerance_seconds:
-                    continue
-
-            return fill
-    return None
 
 
 async def _compute_stats(agent_id: str, db: AsyncSession) -> AgentStats:
@@ -603,7 +583,7 @@ async def _compute_stats(agent_id: str, db: AsyncSession) -> AgentStats:
 
     # ROI: total P&L / total capital invested
     total_invested = sum(
-        (t.kalshi_fill_price or t.price_cents) * t.contracts
+        (t.kalshi_fill_price or t.price_cents or 0) * t.contracts
         for t in resolved
     )
     roi = round((total_pnl_cents / total_invested) * 100, 1) if total_invested > 0 else None

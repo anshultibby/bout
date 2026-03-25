@@ -13,7 +13,6 @@ class Agent:
     display_name: str
     creator: str
     api_key: str
-    kalshi_connected: bool
     created_at: str
 
 
@@ -47,13 +46,15 @@ class Trade:
     side: str
     action: str
     contracts: int
-    price_cents: int
+    price_cents: Optional[int]
     status: str
     reported_at: str
     market_title: Optional[str]
     kalshi_order_id: Optional[str]
     kalshi_fill_price: Optional[int]
     verified_at: Optional[str]
+    resolution: Optional[str]
+    pnl_cents: Optional[int]
 
 
 @dataclass(frozen=True)

@@ -24,18 +24,20 @@ def _parse_response(resp: httpx.Response) -> dict:
     return resp.json()
 
 
-def _validate_trade(ticker: str, side: str, action: str, contracts: int, price_cents: int) -> None:
+def _validate_trade(ticker: str, side: str, action: str, contracts: int, kalshi_order_id: str, price_cents: Optional[int] = None) -> None:
     """Validate trade inputs before sending to API."""
+    if not ticker:
+        raise BoutValidationError("ticker cannot be empty")
     if side not in VALID_SIDES:
         raise BoutValidationError(f"side must be 'yes' or 'no', got '{side}'")
     if action not in VALID_ACTIONS:
         raise BoutValidationError(f"action must be 'buy' or 'sell', got '{action}'")
     if contracts <= 0:
         raise BoutValidationError(f"contracts must be positive, got {contracts}")
-    if not (1 <= price_cents <= 99):
+    if not kalshi_order_id:
+        raise BoutValidationError("kalshi_order_id is required")
+    if price_cents is not None and not (1 <= price_cents <= 99):
         raise BoutValidationError(f"price_cents must be 1-99, got {price_cents}")
-    if not ticker:
-        raise BoutValidationError("ticker cannot be empty")
 
 
 def _build_agent(data: dict) -> Agent:
@@ -45,7 +47,6 @@ def _build_agent(data: dict) -> Agent:
         display_name=data["display_name"],
         creator=data["creator"],
         api_key=data.get("api_key", ""),
-        kalshi_connected=data.get("kalshi_connected", False),
         created_at=data["created_at"],
     )
 
@@ -57,13 +58,15 @@ def _build_trade(data: dict) -> Trade:
         side=data["side"],
         action=data["action"],
         contracts=data["contracts"],
-        price_cents=data["price_cents"],
+        price_cents=data.get("price_cents"),
         status=data["status"],
         reported_at=data["reported_at"],
         market_title=data.get("market_title"),
         kalshi_order_id=data.get("kalshi_order_id"),
         kalshi_fill_price=data.get("kalshi_fill_price"),
         verified_at=data.get("verified_at"),
+        resolution=data.get("resolution"),
+        pnl_cents=data.get("pnl_cents"),
     )
 
 
@@ -191,25 +194,45 @@ class BoutClient:
         side: str,
         action: str,
         contracts: int,
-        price_cents: int,
+        kalshi_order_id: str,
+        price_cents: Optional[int] = None,
         market_title: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> Trade:
-        """Report a trade your bot just made on Kalshi."""
-        _validate_trade(ticker, side, action, contracts, price_cents)
-        body = {
+        """Report a trade your bot just made on Kalshi.
+
+        Args:
+            kalshi_order_id: Required. The Kalshi order ID for exact verification.
+            price_cents: Optional. Bout will use the actual fill price from Kalshi during verification.
+        """
+        _validate_trade(ticker, side, action, contracts, kalshi_order_id, price_cents)
+        body: dict = {
             "ticker": ticker,
             "side": side,
             "action": action,
             "contracts": contracts,
-            "price_cents": price_cents,
+            "kalshi_order_id": kalshi_order_id,
         }
+        if price_cents is not None:
+            body["price_cents"] = price_cents
         if market_title:
             body["market_title"] = market_title
         if notes:
             body["notes"] = notes
         resp = self._http.post("/trades", json=body)
         return _build_trade(_parse_response(resp))
+
+    def report_trades(
+        self,
+        trades: List[dict],
+    ) -> List[Trade]:
+        """Report multiple trades at once (up to 100).
+
+        Each dict should have: ticker, side, action, contracts, kalshi_order_id,
+        and optionally price_cents, market_title, notes.
+        """
+        resp = self._http.post("/trades/batch", json={"trades": trades})
+        return [_build_trade(t) for t in _parse_response(resp)]
 
     def list_trades(
         self,
@@ -333,24 +356,31 @@ class AsyncBoutClient:
         side: str,
         action: str,
         contracts: int,
-        price_cents: int,
+        kalshi_order_id: str,
+        price_cents: Optional[int] = None,
         market_title: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> Trade:
-        _validate_trade(ticker, side, action, contracts, price_cents)
-        body = {
+        _validate_trade(ticker, side, action, contracts, kalshi_order_id, price_cents)
+        body: dict = {
             "ticker": ticker,
             "side": side,
             "action": action,
             "contracts": contracts,
-            "price_cents": price_cents,
+            "kalshi_order_id": kalshi_order_id,
         }
+        if price_cents is not None:
+            body["price_cents"] = price_cents
         if market_title:
             body["market_title"] = market_title
         if notes:
             body["notes"] = notes
         resp = await self._http.post("/trades", json=body)
         return _build_trade(_parse_response(resp))
+
+    async def report_trades(self, trades: List[dict]) -> List[Trade]:
+        resp = await self._http.post("/trades/batch", json={"trades": trades})
+        return [_build_trade(t) for t in _parse_response(resp)]
 
     async def list_trades(
         self,

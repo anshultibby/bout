@@ -49,9 +49,15 @@ class TradeReport(BaseModel):
     side: str = Field(..., pattern=r"^(yes|no)$", description="yes or no")
     action: str = Field(..., pattern=r"^(buy|sell)$", description="buy or sell")
     contracts: int = Field(..., gt=0, description="Number of contracts")
-    price_cents: int = Field(..., ge=1, le=99, description="Limit price in cents (1-99)")
+    price_cents: int | None = Field(None, ge=1, le=99, description="Limit price in cents (1-99). Optional — Bout will use the actual Kalshi fill price during verification.")
+    kalshi_order_id: str = Field(..., description="Kalshi order ID returned when your order was placed. Used for exact verification.")
     market_title: str | None = Field(None, description="Human-readable market title")
     notes: str | None = Field(None, description="Optional notes about the trade rationale")
+
+
+class BatchTradeReport(BaseModel):
+    """Report multiple trades at once."""
+    trades: list[TradeReport] = Field(..., min_length=1, max_length=100)
 
 
 class TradeResponse(BaseModel):
@@ -60,13 +66,15 @@ class TradeResponse(BaseModel):
     side: str
     action: str
     contracts: int
-    price_cents: int
+    price_cents: int | None
     status: str
     reported_at: datetime
     market_title: str | None
     kalshi_order_id: str | None
     kalshi_fill_price: int | None
     verified_at: datetime | None
+    resolution: str | None
+    pnl_cents: int | None
 
 
 class TradeVerificationResult(BaseModel):

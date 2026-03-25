@@ -3,7 +3,6 @@ Lightweight Kalshi API client for trade verification.
 Read-only — only uses GET endpoints to pull fills and positions.
 """
 
-import hashlib
 import time
 import base64
 from datetime import datetime, timezone
@@ -143,35 +142,3 @@ class KalshiVerifier:
         data = await self._get(f"/events/{event_ticker}")
         return data.get("event", data)
 
-    async def verify_fill(self, ticker: str, side: str, action: str,
-                          price_cents: int, contracts: int,
-                          reported_at: datetime, tolerance_seconds: int = 300) -> dict | None:
-        """
-        Try to find a matching Kalshi fill for a reported trade.
-
-        Returns the matching fill dict if found, None otherwise.
-        Matches on: ticker, side, action, approximate price, approximate time.
-        """
-        # Pull recent fills
-        search_start = datetime.fromtimestamp(
-            reported_at.timestamp() - tolerance_seconds, tz=timezone.utc
-        )
-        fills = await self.get_fills(since=search_start)
-
-        for fill in fills:
-            fill_ticker = fill.get("ticker", "")
-            fill_side = fill.get("side", "")
-            fill_action = fill.get("action", "")
-            fill_price = fill.get("yes_price") if side == "yes" else fill.get("no_price")
-            fill_count = fill.get("count", 0)
-
-            # Match criteria
-            if (fill_ticker == ticker and
-                fill_side == side and
-                fill_action == action and
-                fill_count == contracts):
-                # Price within 5 cents tolerance (limit vs fill price can differ)
-                if fill_price is not None and abs(fill_price - price_cents) <= 5:
-                    return fill
-
-        return None

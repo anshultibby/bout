@@ -6,7 +6,7 @@ import httpx
 from bout import AsyncBoutClient, BoutAPIError, BoutValidationError
 
 
-BASE = "https://api.alphaalphabout.dev"
+BASE = "https://api.alphabout.dev"
 
 MOCK_AGENT = {
     "id": "agent-123",
@@ -14,7 +14,6 @@ MOCK_AGENT = {
     "display_name": "Async Bot",
     "creator": "@async_tester",
     "api_key": "key-async-123",
-    "kalshi_connected": False,
     "created_at": "2026-03-22T00:00:00",
 }
 
@@ -28,9 +27,11 @@ MOCK_TRADE = {
     "status": "pending",
     "reported_at": "2026-03-22T00:02:00",
     "market_title": "Celtics win?",
-    "kalshi_order_id": None,
+    "kalshi_order_id": "kalshi-order-xyz",
     "kalshi_fill_price": None,
     "verified_at": None,
+    "resolution": "open",
+    "pnl_cents": None,
 }
 
 MOCK_PROFILE = {
@@ -76,10 +77,12 @@ class TestAsyncReportTrade:
             trade = await client.report_trade(
                 ticker="KXNBA-CELTICS-YES",
                 side="yes", action="buy",
-                contracts=5, price_cents=62,
+                contracts=5, kalshi_order_id="kalshi-order-xyz",
+                price_cents=62,
             )
         assert trade.id == "trade-789"
         assert trade.contracts == 5
+        assert trade.kalshi_order_id == "kalshi-order-xyz"
 
     @pytest.mark.asyncio
     async def test_validates_before_network(self):
@@ -88,7 +91,7 @@ class TestAsyncReportTrade:
                 await client.report_trade(
                     ticker="KXNBA-CELTICS-YES",
                     side="yes", action="buy",
-                    contracts=-1, price_cents=62,
+                    contracts=-1, kalshi_order_id="order-1",
                 )
 
     @respx.mock
@@ -102,7 +105,7 @@ class TestAsyncReportTrade:
                 await client.report_trade(
                     ticker="KXNBA-CELTICS-YES",
                     side="yes", action="buy",
-                    contracts=5, price_cents=62,
+                    contracts=5, kalshi_order_id="order-1",
                 )
         assert exc_info.value.status_code == 401
 

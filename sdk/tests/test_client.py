@@ -6,7 +6,7 @@ import httpx
 from bout import BoutClient, BoutAPIError, BoutValidationError
 
 
-BASE = "https://api.alphaalphabout.dev"
+BASE = "https://api.alphabout.dev"
 
 MOCK_AGENT = {
     "id": "agent-123",
@@ -14,7 +14,6 @@ MOCK_AGENT = {
     "display_name": "Test Bot",
     "creator": "@tester",
     "api_key": "key-abc-123",
-    "kalshi_connected": False,
     "created_at": "2026-03-22T00:00:00",
 }
 
@@ -28,9 +27,11 @@ MOCK_TRADE = {
     "status": "pending",
     "reported_at": "2026-03-22T00:01:00",
     "market_title": "Lakers win?",
-    "kalshi_order_id": None,
+    "kalshi_order_id": "kalshi-order-abc",
     "kalshi_fill_price": None,
     "verified_at": None,
+    "resolution": "open",
+    "pnl_cents": None,
 }
 
 MOCK_PROFILE = {
@@ -65,15 +66,15 @@ MOCK_VERIFY = {
             "kalshi_order_id": "kalshi-order-1",
             "kalshi_fill_price": 45,
             "kalshi_fill_count": 10,
-            "message": "Matched Kalshi fill",
+            "message": "Verified via Kalshi order kalshi-order-1",
         },
         {
             "trade_id": "trade-2",
             "status": "unverified",
-            "kalshi_order_id": None,
+            "kalshi_order_id": "kalshi-order-2",
             "kalshi_fill_price": None,
             "kalshi_fill_count": None,
-            "message": "No matching Kalshi fill found",
+            "message": "Order kalshi-order-2 not found in Kalshi fills",
         },
     ],
 }
@@ -84,7 +85,7 @@ MOCK_BADGE = {
     "win_rate": 66.7,
     "roi_percent": 42.5,
     "verification_rate": 0.75,
-    "badge_svg_url": "https://api.alphaalphabout.dev/agents/TEST_BOT/badge.svg",
+    "badge_svg_url": "https://api.alphabout.dev/agents/TEST_BOT/badge.svg",
     "profile_url": "https://alphabout.dev/TEST_BOT",
 }
 
@@ -122,13 +123,30 @@ class TestReportTrade:
                 side="yes",
                 action="buy",
                 contracts=10,
+                kalshi_order_id="kalshi-order-abc",
                 price_cents=45,
                 market_title="Lakers win?",
             )
         assert trade.id == "trade-456"
         assert trade.status == "pending"
         assert trade.contracts == 10
-        assert trade.price_cents == 45
+        assert trade.kalshi_order_id == "kalshi-order-abc"
+
+    @respx.mock
+    def test_report_without_price(self):
+        """price_cents is optional — Bout fills it from Kalshi during verification."""
+        respx.post(f"{BASE}/trades").mock(
+            return_value=httpx.Response(201, json={**MOCK_TRADE, "price_cents": None})
+        )
+        with BoutClient(api_key="key-abc-123") as client:
+            trade = client.report_trade(
+                ticker="KXNBA-LAKERS-YES",
+                side="yes",
+                action="buy",
+                contracts=10,
+                kalshi_order_id="kalshi-order-abc",
+            )
+        assert trade.price_cents is None
 
     def test_report_validates_before_network(self):
         """Should raise BoutValidationError without making any HTTP call."""
@@ -139,7 +157,18 @@ class TestReportTrade:
                     side="yes",
                     action="buy",
                     contracts=10,
-                    price_cents=0,  # invalid
+                    kalshi_order_id="",  # empty order_id
+                )
+
+    def test_report_validates_bad_side(self):
+        with BoutClient(api_key="key-abc-123") as client:
+            with pytest.raises(BoutValidationError):
+                client.report_trade(
+                    ticker="KXNBA-LAKERS-YES",
+                    side="maybe",
+                    action="buy",
+                    contracts=10,
+                    kalshi_order_id="order-1",
                 )
 
     @respx.mock
@@ -153,13 +182,13 @@ class TestReportTrade:
                 side="yes",
                 action="buy",
                 contracts=10,
-                price_cents=45,
+                kalshi_order_id="kalshi-order-abc",
                 notes="High conviction play",
             )
         assert trade.ticker == "KXNBA-LAKERS-YES"
-        # Verify notes was sent in the request body
         request = respx.calls.last.request
         assert b"notes" in request.content
+        assert b"kalshi_order_id" in request.content
 
     @respx.mock
     def test_report_unauthorized(self):
@@ -171,7 +200,7 @@ class TestReportTrade:
                 client.report_trade(
                     ticker="KXNBA-LAKERS-YES",
                     side="yes", action="buy",
-                    contracts=10, price_cents=45,
+                    contracts=10, kalshi_order_id="order-1",
                 )
         assert exc_info.value.status_code == 401
 
@@ -185,7 +214,7 @@ class TestReportTrade:
                 client.report_trade(
                     ticker="KXNBA-LAKERS-YES",
                     side="yes", action="buy",
-                    contracts=10, price_cents=45,
+                    contracts=10, kalshi_order_id="order-1",
                 )
         assert exc_info.value.status_code == 409
 
@@ -233,7 +262,6 @@ class TestListTrades:
         with BoutClient(api_key="key-abc-123") as client:
             trades = client.list_trades(agent_name="TEST_BOT", status="pending")
         assert len(trades) == 1
-        # Verify query params were sent
         request = respx.calls.last.request
         assert "agent_name=TEST_BOT" in str(request.url)
         assert "status=pending" in str(request.url)
@@ -253,6 +281,18 @@ class TestVerify:
         assert result.details[0].status == "verified"
         assert result.details[0].kalshi_order_id == "kalshi-order-1"
         assert result.details[1].status == "unverified"
+
+
+class TestSettle:
+    @respx.mock
+    def test_settle(self):
+        respx.post(f"{BASE}/agents/TEST_BOT/settle").mock(
+            return_value=httpx.Response(200, json={"settled": 1, "sold_early": 0, "still_open": 2})
+        )
+        with BoutClient(api_key="key-abc-123") as client:
+            result = client.settle("TEST_BOT")
+        assert result["settled"] == 1
+        assert result["still_open"] == 2
 
 
 class TestBadge:

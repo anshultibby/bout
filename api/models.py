@@ -58,7 +58,7 @@ class Trade(Base):
     side: Mapped[str] = mapped_column(String)                         # "yes" or "no"
     action: Mapped[str] = mapped_column(String)                       # "buy" or "sell"
     contracts: Mapped[int] = mapped_column(Integer)
-    price_cents: Mapped[int] = mapped_column(Integer)                 # limit price in cents
+    price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)  # limit price (optional — filled from Kalshi during verification)
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # What Kalshi says (filled in during verification)

@@ -7,41 +7,49 @@ from bout.exceptions import BoutValidationError
 
 class TestTradeValidation:
     def test_valid_buy_yes(self):
-        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, 45)
+        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, "order-1", 45)
 
     def test_valid_sell_no(self):
-        _validate_trade("KXNBA-LAKERS-NO", "no", "sell", 1, 99)
+        _validate_trade("KXNBA-LAKERS-NO", "no", "sell", 1, "order-2", 99)
+
+    def test_valid_no_price(self):
+        """price_cents is optional."""
+        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, "order-1")
 
     def test_min_price(self):
-        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 1, 1)
+        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 1, "order-1", 1)
 
     def test_max_price(self):
-        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 1, 99)
+        _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 1, "order-1", 99)
 
     def test_invalid_side(self):
         with pytest.raises(BoutValidationError, match="side must be"):
-            _validate_trade("KXNBA-LAKERS-YES", "maybe", "buy", 10, 45)
+            _validate_trade("KXNBA-LAKERS-YES", "maybe", "buy", 10, "order-1")
 
     def test_invalid_action(self):
         with pytest.raises(BoutValidationError, match="action must be"):
-            _validate_trade("KXNBA-LAKERS-YES", "yes", "hold", 10, 45)
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "hold", 10, "order-1")
 
     def test_zero_contracts(self):
         with pytest.raises(BoutValidationError, match="contracts must be positive"):
-            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 0, 45)
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 0, "order-1")
 
     def test_negative_contracts(self):
         with pytest.raises(BoutValidationError, match="contracts must be positive"):
-            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", -5, 45)
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", -5, "order-1")
 
     def test_price_too_low(self):
         with pytest.raises(BoutValidationError, match="price_cents must be 1-99"):
-            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, 0)
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, "order-1", 0)
 
     def test_price_too_high(self):
         with pytest.raises(BoutValidationError, match="price_cents must be 1-99"):
-            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, 100)
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, "order-1", 100)
 
     def test_empty_ticker(self):
         with pytest.raises(BoutValidationError, match="ticker cannot be empty"):
-            _validate_trade("", "yes", "buy", 10, 45)
+            _validate_trade("", "yes", "buy", 10, "order-1")
+
+    def test_empty_order_id(self):
+        with pytest.raises(BoutValidationError, match="kalshi_order_id is required"):
+            _validate_trade("KXNBA-LAKERS-YES", "yes", "buy", 10, "")
