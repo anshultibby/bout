@@ -166,7 +166,7 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-4 text-xs">
             <a
-              href="#leaderboard"
+              href="/leaderboard"
               className="text-text-mid hover:text-cyan transition-colors uppercase tracking-wider"
             >
               Rankings
